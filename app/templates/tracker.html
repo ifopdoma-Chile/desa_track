@@ -1,0 +1,165 @@
+{% extends 'base.html' %}
+{% block title %}Track Viewer - Visualizador de Cruceros{% endblock %}
+
+{% block content %}
+<div id="upload-panel" style="
+  position: absolute; top: 15px; left: 50%; transform: translateX(-50%);
+  z-index: 1000; background: rgba(255,255,255,0.95); border-radius: 12px;
+  padding: 12px 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+  display: flex; align-items: center; gap: 12px; max-width: 90%;
+  backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.3);
+">
+  <img src="{{ url_for('static', filename='gral/SAPO_rec.jpeg') }}" height="36" alt="SAPO">
+  <span style="font-weight: 600; font-size: 14px; color: #1a3a5c; white-space: nowrap;">Track Viewer</span>
+  <span style="color: #ccc;">|</span>
+  <form id="upload-form" enctype="multipart/form-data" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+    <input type="file" name="file" id="file-input" accept=".xlsx,.xls" style="font-size: 13px; color: #333;">
+    <button type="submit" id="upload-btn" style="
+      background: linear-gradient(135deg, #1a3a5c, #2c6b9e);
+      color: white; border: none; border-radius: 6px; padding: 6px 16px;
+      font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.2s;
+    ">Cargar y Visualizar</button>
+  </form>
+  <div id="status-badge" style="display: none; background: #e8f5e9; color: #2e7d32; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 500;"></div>
+  <div id="loading-spinner" style="display: none; width: 20px; height: 20px; border: 3px solid #e0e0e0; border-top: 3px solid #2c6b9e; border-radius: 50%; animation: spin 0.8s linear infinite;"></div>
+</div>
+
+<div id="map-container" style="width: 100%; height: 100vh;">
+  {% if mapa_html %}
+    {{ mapa_html | safe }}
+  {% else %}
+    <div id="placeholder-map" style="width: 100%; height: 100%; background: #f0f4f8; display: flex; align-items: center; justify-content: center; flex-direction: column; color: #5a6a7a;">
+      <div style="font-size: 48px; margin-bottom: 16px;">🗺️</div>
+      <div style="font-size: 18px; font-weight: 500; margin-bottom: 8px;">Visualizador de Tracks de Crucero</div>
+      <div style="font-size: 13px; color: #8a9aaa;">Sube un archivo Excel (.xlsx) con datos de track para visualizar</div>
+      <div style="margin-top: 20px; background: white; padding: 16px 24px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); max-width: 420px; font-size: 12px; color: #6a7a8a; line-height: 1.6;">
+        <strong style="color: #1a3a5c;">Formato esperado:</strong><br>
+        • Hoja <strong>Transectas Dia</strong>: columnas Long, Lat, Ubm (tracks diarios)<br>
+        • Hoja <strong>Transectas Reporte</strong>: columnas Long, Lat, num (transectas de referencia)<br>
+        • Las áreas marinas protegidas (AMP) se cargan automáticamente desde GeoServer
+      </div>
+    </div>
+  {% endif %}
+</div>
+
+<style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var form = document.getElementById('upload-form');
+  var fileInput = document.getElementById('file-input');
+  var uploadBtn = document.getElementById('upload-btn');
+  var spinner = document.getElementById('loading-spinner');
+  var badge = document.getElementById('status-badge');
+  var mapContainer = document.getElementById('map-container');
+
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    if (!fileInput.files || !fileInput.files[0]) {
+      badge.textContent = 'Selecciona un archivo';
+      badge.style.cssText = 'display:inline-block;background:#fff3e0;color:#e65100;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:500;';
+      return;
+    }
+
+    var formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    uploadBtn.disabled = true;
+    spinner.style.display = 'inline-block';
+    badge.style.display = 'none';
+
+    fetch('/track/upload', { method: 'POST', body: formData })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      spinner.style.display = 'none';
+      uploadBtn.disabled = false;
+      if (data.error) {
+        badge.textContent = data.error;
+        badge.style.cssText = 'display:inline-block;background:#ffebee;color:#c62828;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:500;';
+        return;
+      }
+
+      // Parsear el HTML completo de Folium usando DOMParser
+      // Esto respeta correctamente <head> y <body>
+      var parser = new DOMParser();
+      var doc = parser.parseFromString(data.map, 'text/html');
+
+      // 1. Cargar CSS del <head> de Folium que no esten ya en la pagina
+      var foliumLinks = doc.head.querySelectorAll('link[rel="stylesheet"]');
+      foliumLinks.forEach(function(link) {
+        var href = link.getAttribute('href');
+        if (href && !document.querySelector('link[href="' + href.replace(/"/g, '\\"') + '"]')) {
+          var newLink = document.createElement('link');
+          newLink.rel = 'stylesheet';
+          newLink.href = href;
+          document.head.appendChild(newLink);
+        }
+      });
+
+      // 2. Cargar scripts externos del <head> de Folium que falten
+      var foliumScripts = doc.head.querySelectorAll('script[src]');
+      var scriptsToLoad = [];
+      foliumScripts.forEach(function(scr) {
+        var src = scr.getAttribute('src');
+        if (src && !document.querySelector('script[src="' + src.replace(/"/g, '\\"') + '"]')) {
+          scriptsToLoad.push(src);
+        }
+      });
+
+      // 3. Extraer cuerpo del mapa (body de Folium)
+      var bodyHTML = doc.body.innerHTML;
+
+      // Funcion para inyectar el mapa cuando todas las dependencias esten listas
+      function injectMap() {
+        mapContainer.innerHTML = bodyHTML;
+
+        // Recrear TODOS los scripts inline para forzar su ejecucion
+        mapContainer.querySelectorAll('script').forEach(function(oldScr) {
+          var newScr = document.createElement('script');
+          for (var i = 0; i < oldScr.attributes.length; i++) {
+            newScr.setAttribute(oldScr.attributes[i].name, oldScr.attributes[i].value);
+          }
+          newScr.textContent = oldScr.textContent;
+          oldScr.parentNode.replaceChild(newScr, oldScr);
+        });
+
+        // Mostrar badge OK
+        badge.textContent = 'OK: ' + data.info.puntos + ' puntos';
+        badge.style.cssText = 'display:inline-block;background:#e8f5e9;color:#2e7d32;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:500;';
+
+        // Info del archivo
+        var oldInfo = document.getElementById('file-info');
+        if (oldInfo) oldInfo.remove();
+        var infoDiv = document.createElement('div');
+        infoDiv.id = 'file-info';
+        infoDiv.style.cssText = 'position:absolute;bottom:25px;left:50%;transform:translateX(-50%);z-index:1000;background:rgba(255,255,255,0.92);border-radius:8px;padding:8px 16px;box-shadow:0 2px 12px rgba(0,0,0,0.1);font-size:12px;color:#333;backdrop-filter:blur(4px);display:flex;gap:20px;align-items:center;';
+        infoDiv.innerHTML = '<span><strong>Archivo:</strong> ' + (data.filename || '') + '</span>' +
+          '<span><strong>Puntos:</strong> ' + data.info.puntos + '</span>';
+        document.getElementById('content').appendChild(infoDiv);
+      }
+
+      // 4. Cargar scripts pendientes secuencialmente
+      function loadNext() {
+        if (scriptsToLoad.length === 0) {
+          injectMap();
+          return;
+        }
+        var src = scriptsToLoad.shift();
+        var s = document.createElement('script');
+        s.src = src;
+        s.onload = loadNext;
+        s.onerror = loadNext;
+        document.head.appendChild(s);
+      }
+      loadNext();
+    })
+    .catch(function(err) {
+      spinner.style.display = 'none';
+      uploadBtn.disabled = false;
+      console.error('Error:', err);
+      badge.textContent = 'Error de conexion';
+      badge.style.cssText = 'display:inline-block;background:#ffebee;color:#c62828;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:500;';
+    });
+  });
+});
+</script>
+{% endblock %}
